@@ -21,11 +21,11 @@ app.use(cors());
 const verifyFBToken = async(req, res, next)=>{
   const authorization = req.headers.authorization;
   if(!authorization){
-    return res.status(401).send({message: "unauthorized access"})
+    return res.status(401).send({message: "unauthorized access"});
   }
   const token = authorization.split(" ")[1];
   if(!token){
-     return res.status(401).send({message: "unauthorized access"})
+     return res.status(401).send({message: "unauthorized access"});
   }
   try {
     const decoded = await admin.auth().verifyIdToken(token);
