@@ -5,10 +5,37 @@ const app = express();
 const port = process.env.PORT || 3000;
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
+const admin = require("firebase-admin");
+
+const serviceAccount = require("./contesto-firebase-adminsdk.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
 
 // middleware
 app.use(express.json());
 app.use(cors());
+
+const verifyFBToken = async(req, res, next)=>{
+  const authorization = req.headers.authorization;
+  if(!authorization){
+    return res.status(401).send({message: "unauthorized access"})
+  }
+  const token = authorization.split(" ")[1];
+  if(!token){
+     return res.status(401).send({message: "unauthorized access"})
+  }
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+    console.log("decoded token", decoded);
+    req.decodedEmail = decoded.email;
+    next();
+  } catch (error) {
+    return res.status(401).send({ message: "unauthorized access" });
+  }
+}
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.k11w7kv.mongodb.net/?appName=Cluster0`;
 
@@ -35,9 +62,8 @@ const run = async () => {
     const creatorsCollection = database.collection("creators");
 
     // users related apis
-    app.get("/users", async (req, res)=>{
+    app.get("/users",verifyFBToken, async (req, res)=>{
        const searchText = req.query.searchText;
-       console.log(req.headers)
       const query = {};
       if (searchText) {
         query.$or = [
