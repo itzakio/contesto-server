@@ -3,7 +3,7 @@ const cors = require("cors");
 require("dotenv").config();
 const app = express();
 const port = process.env.PORT || 3000;
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 
 // middleware
@@ -32,10 +32,20 @@ const run = async () => {
 
     const database = client.db("contesto_db");
     const usersCollection = database.collection("users");
+    const creatorsCollection = database.collection("creators");
 
     // users related apis
     app.get("/users", async (req, res)=>{
-      const result = await usersCollection.find().toArray();
+       const searchText = req.query.searchText;
+       console.log(req.headers)
+      const query = {};
+      if (searchText) {
+        query.$or = [
+          { name: { $regex: searchText, $options: "i" } },
+          { email: { $regex: searchText, $options: "i" } },
+        ];
+      }
+      const result = await usersCollection.find(query).toArray();
       res.send(result);
     })
     
@@ -51,6 +61,36 @@ const run = async () => {
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
+
+    app.patch("/users/:id/role", async (req, res)=>{
+      const roleInfo = req.body;
+      const id = req.params.id;
+      const query = {_id: new ObjectId(id)};
+      const updatedDoc = {
+        $set:{
+          role: roleInfo.role,
+        }
+      };
+      const result = await usersCollection.updateOne(query, updatedDoc);
+      res.send(result);
+    })
+
+    // creator related apis
+    app.post("/creators", async(req, res)=>{
+      const creatorInfo = req.body;
+      creatorInfo.status = "pending"
+      creatorInfo.createdAt = new Date().toISOString();
+      const creatorExist = await creatorsCollection.findOne({email: creatorInfo.email});
+      if(creatorExist){
+        return res.send({message: "Creator already exist!"})
+      }
+      const isAdmin = await usersCollection.findOne({email: creatorInfo.email})
+      if(isAdmin.role === "admin"){
+        return res.send({message: "Admin can't apply to be a creator!"})
+      }
+      const result = await creatorsCollection.insertOne(creatorInfo)
+      res.send(result)
+    })
 
     
 
