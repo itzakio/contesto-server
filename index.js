@@ -102,6 +102,19 @@ const run = async () => {
     })
 
     // creator related apis
+    app.get("/creators", async (req, res)=>{
+      const result = await creatorsCollection.find().toArray();
+      res.send(result)
+    })
+
+    
+    app.get("/users/:email/role", async (req, res) => {
+      const email = req.params.email;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+      res.send({ role: user?.role || "user" });
+    });
+
     app.post("/creators", async(req, res)=>{
       const creatorInfo = req.body;
       creatorInfo.status = "pending"
