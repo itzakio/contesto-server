@@ -78,7 +78,7 @@ const run = async () => {
     app.post("/users", async (req, res) => {
       const user = req.body;
       user.role = "user";
-      user.created_at = new Date().toISOString();
+      user.createdAt = new Date().toISOString();
       const email = user.email;
       const userExist = await usersCollection.findOne({ email });
       if (userExist) {
@@ -129,6 +129,13 @@ const run = async () => {
       }
       const result = await creatorsCollection.insertOne(creatorInfo)
       res.send(result)
+    })
+
+    app.delete("/creators/:id",verifyFBToken, async(req, res)=>{
+      const id = req.params.id;
+      const query = {_id: new ObjectId(id)};
+      const result = await creatorsCollection.deleteOne(query);
+      res.send(result);
     })
 
     
