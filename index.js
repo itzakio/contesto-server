@@ -131,6 +131,19 @@ const run = async () => {
       res.send(result)
     })
 
+    app.patch("/creators/:id", async (req, res)=>{
+      const id = req.params.id;
+      const {status} = req.body;
+      const query = {_id: new ObjectId(id)};
+      const updatedDoc = {
+        $set:{
+          status: status,
+        }
+      }
+      const result = await creatorsCollection.updateOne(query, updatedDoc);
+      res.send(result);
+    })
+
     app.delete("/creators/:id",verifyFBToken, async(req, res)=>{
       const id = req.params.id;
       const query = {_id: new ObjectId(id)};
