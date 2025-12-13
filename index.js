@@ -61,6 +61,29 @@ const run = async () => {
     const usersCollection = database.collection("users");
     const creatorsCollection = database.collection("creators");
 
+    // middleware with database access
+    // verify admin before admin activity
+    // must use verifyFBToken before use verifyAdmin
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decodedEmail;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+      if (!user || user.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
+
+    const verifyCreator = async (req, res, next) => {
+      const email = req.decodedEmail;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+      if (!user || user.role !== "creator") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
+
     // users related apis
     app.get("/users",verifyFBToken, async (req, res)=>{
        const searchText = req.query.searchText;
