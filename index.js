@@ -10,32 +10,30 @@ const admin = require("firebase-admin");
 const serviceAccount = require("./contesto-firebase-adminsdk.json");
 
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
+  credential: admin.credential.cert(serviceAccount),
 });
-
 
 // middleware
 app.use(express.json());
 app.use(cors());
 
-const verifyFBToken = async(req, res, next)=>{
+const verifyFBToken = async (req, res, next) => {
   const authorization = req.headers.authorization;
-  if(!authorization){
-    return res.status(401).send({message: "unauthorized access"});
+  if (!authorization) {
+    return res.status(401).send({ message: "unauthorized access" });
   }
   const token = authorization.split(" ")[1];
-  if(!token){
-     return res.status(401).send({message: "unauthorized access"});
+  if (!token) {
+    return res.status(401).send({ message: "unauthorized access" });
   }
   try {
     const decoded = await admin.auth().verifyIdToken(token);
-    console.log("decoded token", decoded);
     req.decodedEmail = decoded.email;
     next();
   } catch (error) {
     return res.status(401).send({ message: "unauthorized access" });
   }
-}
+};
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.k11w7kv.mongodb.net/?appName=Cluster0`;
 
@@ -60,6 +58,7 @@ const run = async () => {
     const database = client.db("contesto_db");
     const usersCollection = database.collection("users");
     const creatorsCollection = database.collection("creators");
+    const contestsCollection = database.collection("contests");
 
     // middleware with database access
     // verify admin before admin activity
@@ -85,8 +84,8 @@ const run = async () => {
     };
 
     // users related apis
-    app.get("/users",verifyFBToken, async (req, res)=>{
-       const searchText = req.query.searchText;
+    app.get("/users", verifyFBToken, verifyAdmin, async (req, res) => {
+      const searchText = req.query.searchText;
       const query = {};
       if (searchText) {
         query.$or = [
@@ -96,8 +95,15 @@ const run = async () => {
       }
       const result = await usersCollection.find(query).toArray();
       res.send(result);
-    })
-    
+    });
+
+    app.get("/users/:email/role", async (req, res) => {
+      const email = req.params.email;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+      res.send({ role: user?.role || "user" });
+    });
+
     app.post("/users", async (req, res) => {
       const user = req.body;
       user.role = "user";
@@ -111,70 +117,104 @@ const run = async () => {
       res.send(result);
     });
 
-    app.patch("/users/:id/role", async (req, res)=>{
-      const roleInfo = req.body;
-      const id = req.params.id;
-      const query = {_id: new ObjectId(id)};
-      const updatedDoc = {
-        $set:{
-          role: roleInfo.role,
-        }
-      };
-      const result = await usersCollection.updateOne(query, updatedDoc);
-      res.send(result);
-    })
+    app.patch(
+      "/users/:id/role",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const roleInfo = req.body;
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const updatedDoc = {
+          $set: {
+            role: roleInfo.role,
+          },
+        };
+        const result = await usersCollection.updateOne(query, updatedDoc);
+        res.send(result);
+      }
+    );
 
     // creator related apis
-    app.get("/creators", async (req, res)=>{
-      const result = await creatorsCollection.find().toArray();
-      res.send(result)
-    })
-
-    
-    app.get("/users/:email/role", async (req, res) => {
-      const email = req.params.email;
-      const query = { email };
-      const user = await usersCollection.findOne(query);
-      res.send({ role: user?.role || "user" });
+    app.get("/creators", async (req, res) => {
+      const {searchText, email} = req.query;
+      const query = {};
+      if (searchText) {
+        query.$or = [
+          { name: { $regex: searchText, $options: "i" } },
+          { email: { $regex: searchText, $options: "i" } },
+        ];
+      }
+      if(email){
+        query.email = email;
+      }
+      const result = await creatorsCollection.find(query).toArray();
+      res.send(result);
     });
 
-    app.post("/creators", async(req, res)=>{
+    app.post("/creators", async (req, res) => {
       const creatorInfo = req.body;
-      creatorInfo.status = "pending"
+      creatorInfo.status = "pending";
       creatorInfo.createdAt = new Date().toISOString();
-      const creatorExist = await creatorsCollection.findOne({email: creatorInfo.email});
-      if(creatorExist){
-        return res.send({message: "Creator already exist!"})
+      const creatorExist = await creatorsCollection.findOne({
+        email: creatorInfo.email,
+      });
+      if (creatorExist) {
+        return res.send({ message: "Creator already exist!" });
       }
-      const isAdmin = await usersCollection.findOne({email: creatorInfo.email})
-      if(isAdmin.role === "admin"){
-        return res.send({message: "Admin can't apply to be a creator!"})
+      const isAdmin = await usersCollection.findOne({
+        email: creatorInfo.email,
+      });
+      if (isAdmin.role === "admin") {
+        return res.send({ message: "Admin can't apply to be a creator!" });
       }
-      const result = await creatorsCollection.insertOne(creatorInfo)
-      res.send(result)
-    })
+      const result = await creatorsCollection.insertOne(creatorInfo);
+      res.send(result);
+    });
 
-    app.patch("/creators/:id", async (req, res)=>{
+    app.patch("/creators/:id", verifyFBToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
-      const {status} = req.body;
-      const query = {_id: new ObjectId(id)};
-      const updatedDoc = {
-        $set:{
-          status: status,
-        }
+      const { status, email } = req.body;
+      const query = { _id: new ObjectId(id) };
+      const userQuery = {email: email}
+      const userRole = {};
+      if (status === "approved") {
+        userRole.role = "creator";
+      } else {
+        userRole.role = "user";
       }
+      const roleUpdate = {
+        $set: {role: userRole.role},
+      };
+      const userResult = await usersCollection.updateOne(userQuery, roleUpdate);
+      const updatedDoc = {
+        $set: {
+          status: status,
+        },
+      };
       const result = await creatorsCollection.updateOne(query, updatedDoc);
       res.send(result);
-    })
+    });
 
-    app.delete("/creators/:id",verifyFBToken, async(req, res)=>{
-      const id = req.params.id;
-      const query = {_id: new ObjectId(id)};
-      const result = await creatorsCollection.deleteOne(query);
-      res.send(result);
-    })
+    app.delete(
+      "/creators/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await creatorsCollection.deleteOne(query);
+        res.send(result);
+      }
+    );
 
-    
+    // contest related apis
+    app.post("/contests", async (req, res)=>{
+      const contestData = req.body;
+      contestData.status = "pending";
+      const result = await contestsCollection.insertOne(contestData);
+      res.send(result)
+    })
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
