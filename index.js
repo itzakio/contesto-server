@@ -137,7 +137,7 @@ const run = async () => {
 
     // creator related apis
     app.get("/creators", async (req, res) => {
-      const {searchText, email} = req.query;
+      const { searchText, email } = req.query;
       const query = {};
       if (searchText) {
         query.$or = [
@@ -145,7 +145,7 @@ const run = async () => {
           { email: { $regex: searchText, $options: "i" } },
         ];
       }
-      if(email){
+      if (email) {
         query.email = email;
       }
       const result = await creatorsCollection.find(query).toArray();
@@ -176,7 +176,7 @@ const run = async () => {
       const id = req.params.id;
       const { status, email } = req.body;
       const query = { _id: new ObjectId(id) };
-      const userQuery = {email: email}
+      const userQuery = { email: email };
       const userRole = {};
       if (status === "approved") {
         userRole.role = "creator";
@@ -184,7 +184,7 @@ const run = async () => {
         userRole.role = "user";
       }
       const roleUpdate = {
-        $set: {role: userRole.role},
+        $set: { role: userRole.role },
       };
       const userResult = await usersCollection.updateOne(userQuery, roleUpdate);
       const updatedDoc = {
@@ -209,12 +209,27 @@ const run = async () => {
     );
 
     // contest related apis
-    app.post("/contests", async (req, res)=>{
+    app.get("/contests", async (req, res) => {
+      const {email} = req.query;
+      const query = {};
+      if (email) {
+        query.creatorEmail = email;
+      }
+      const result = await contestsCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    app.get("/contests", verifyFBToken, verifyAdmin, async (req, res) => {
+      const result = await contestsCollection.find().toArray();
+      res.send(result);
+    });
+
+    app.post("/contests", verifyFBToken, async (req, res) => {
       const contestData = req.body;
       contestData.status = "pending";
       const result = await contestsCollection.insertOne(contestData);
-      res.send(result)
-    })
+      res.send(result);
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
