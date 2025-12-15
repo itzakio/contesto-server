@@ -208,19 +208,33 @@ const run = async () => {
       }
     );
 
+
     // contest related apis
-    app.get("/contests", async (req, res) => {
-      const {email} = req.query;
-      const query = {};
-      if (email) {
-        query.creatorEmail = email;
+    app.get("/contests", async(req, res)=>{
+      const query = {status: "approved"};
+      const result = await contestsCollection.find(query).toArray();
+      res.send(result);
+    })
+
+    app.get("/creator/contests",verifyFBToken,verifyCreator,async (req, res) => {
+        const { email } = req.query;
+        const query = email ? { creatorEmail: email } : {};
+        const result = await contestsCollection.find(query).toArray();
+        res.send(result);
       }
+    );
+
+    app.get("/admin/contests", verifyFBToken, verifyAdmin, async (req, res) => {
+      const { status } = req.query;
+      const query = status ? { status } : {};
       const result = await contestsCollection.find(query).toArray();
       res.send(result);
     });
 
-    app.get("/contests", verifyFBToken, verifyAdmin, async (req, res) => {
-      const result = await contestsCollection.find().toArray();
+    app.get("/contests/:id", verifyFBToken, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await contestsCollection.findOne(query);
       res.send(result);
     });
 
@@ -230,6 +244,37 @@ const run = async () => {
       const result = await contestsCollection.insertOne(contestData);
       res.send(result);
     });
+
+    app.patch(
+      "/creator/contests/:id",
+      verifyFBToken,
+      verifyCreator,
+      async (req, res) => {
+        const id = req.params.id;
+        const contestDataUpdated = req.body;
+        const query = { _id: new ObjectId(id) };
+        const updatedDoc = {
+          $set: contestDataUpdated,
+        };
+        const result = await contestsCollection.updateOne(query, updatedDoc);
+        res.send(result);
+      }
+    );
+    app.patch(
+      "/admin/contests/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const updatedStatus = req.body;
+        const query = { _id: new ObjectId(id) };
+        const updatedDoc = {
+          $set: updatedStatus,
+        };
+        const result = await contestsCollection.updateOne(query, updatedDoc);
+        res.send(result);
+      }
+    );
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
