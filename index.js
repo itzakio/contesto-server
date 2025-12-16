@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
 const app = express();
+const stripe = require("stripe")(process.env.STRIPE_SECRET);
 const port = process.env.PORT || 3000;
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -59,6 +60,8 @@ const run = async () => {
     const usersCollection = database.collection("users");
     const creatorsCollection = database.collection("creators");
     const contestsCollection = database.collection("contests");
+    const paymentsCollection = database.collection("payments");
+    const participantsCollection = database.collection("participants");
 
     // middleware with database access
     // verify admin before admin activity
@@ -208,15 +211,28 @@ const run = async () => {
       }
     );
 
-
     // contest related apis
-    app.get("/contests", async(req, res)=>{
-      const query = {status: "approved"};
-      const result = await contestsCollection.find(query).toArray();
+    app.get("/contests", async (req, res) => {
+      const query = { status: "approved" };
+      const result = await contestsCollection
+        .find(query)
+        .sort({ participationEndAt: -1 })
+        .toArray();
       res.send(result);
-    })
+    });
 
-    app.get("/creator/contests",verifyFBToken,verifyCreator,async (req, res) => {
+    app.get("/contests/:id", verifyFBToken, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await contestsCollection.findOne(query);
+      res.send(result);
+    });
+
+    app.get(
+      "/creator/contests",
+      verifyFBToken,
+      verifyCreator,
+      async (req, res) => {
         const { email } = req.query;
         const query = email ? { creatorEmail: email } : {};
         const result = await contestsCollection.find(query).toArray();
@@ -228,13 +244,6 @@ const run = async () => {
       const { status } = req.query;
       const query = status ? { status } : {};
       const result = await contestsCollection.find(query).toArray();
-      res.send(result);
-    });
-
-    app.get("/contests/:id", verifyFBToken, async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await contestsCollection.findOne(query);
       res.send(result);
     });
 
@@ -275,6 +284,100 @@ const run = async () => {
         res.send(result);
       }
     );
+
+    // payment related apis
+    app.post("/payment-checkout-session", async (req, res) => {
+      const paymentInfo = req.body;
+      const contestQuery = { _id: new ObjectId(paymentInfo.contestId) };
+      const contest = await contestsCollection.findOne(contestQuery);
+      console.log("contest", contest);
+
+      const amount = parseInt(contest.entryFee) * 100;
+
+      const session = await stripe.checkout.sessions.create({
+        line_items: [
+          {
+            // Provide the exact Price ID (for example, price_1234) of the product you want to sell
+            price_data: {
+              currency: "USD",
+              unit_amount: amount,
+              product_data: {
+                name: `Pay for ${contest.title}`,
+              },
+            },
+            quantity: 1,
+          },
+        ],
+        customer_email: paymentInfo.userEmail,
+        metadata: {
+          contestId: paymentInfo.contestId,
+          contestName: paymentInfo.contestName,
+        },
+        mode: "payment",
+        success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+      });
+      res.send({ url: session.url });
+    });
+
+    app.post("/verify-payment", async (req, res) => {
+      try {
+        const sessionId = req.query.session_id;
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        console.log("session retrieve", session);
+        const userEmail = session.customer_email;
+        const contestId = session.metadata.contestId;
+        const transactionId = session.payment_intent;
+
+        const existingPayment = await paymentsCollection.findOne({
+          transactionId,
+        });
+
+        if (existingPayment) {
+          return res.send({ success: true, alreadyVerified: true, transactionId });
+        }
+
+        if (session.payment_status === "paid") {
+          const payment = {
+            amount: session.amount_total / 100,
+            currency: session.currency,
+            userEmail: session.customer_email,
+            contestId: session.metadata.contestId,
+            contestName: session.metadata.contestName,
+            transactionId: session.payment_intent,
+            paymentStatus: session.payment_status,
+            paidAt: new Date(),
+          };
+
+          const paymentResult = await paymentsCollection.insertOne(payment);
+
+          const existingParticipant = await participantsCollection.findOne({
+            contestId,
+            userEmail,
+          });
+
+          const participant = {
+            contestId,
+            userEmail,
+            paymentId: paymentResult.insertedId.toString(),
+            joinedAt: new Date(),
+          };
+
+          if (!existingParticipant) {
+            await participantsCollection.insertOne(participant);
+          }
+
+          res.send({
+            success: true,
+            paymentId: paymentResult.insertedId,
+            transactionId
+          });
+        }
+      } catch (error) {
+        console.error("Verify payment error:", error);
+        res.status(500).send({ message: "Payment verification failed" });
+      }
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
