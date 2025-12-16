@@ -29,7 +29,10 @@ const verifyFBToken = async (req, res, next) => {
   }
   try {
     const decoded = await admin.auth().verifyIdToken(token);
-    req.decodedEmail = decoded.email;
+    req.user = {
+      email: decoded.email,
+      uid: decoded.uid,
+    };
     next();
   } catch (error) {
     return res.status(401).send({ message: "unauthorized access" });
@@ -67,7 +70,7 @@ const run = async () => {
     // verify admin before admin activity
     // must use verifyFBToken before use verifyAdmin
     const verifyAdmin = async (req, res, next) => {
-      const email = req.decodedEmail;
+      const email = req.user.email;
       const query = { email };
       const user = await usersCollection.findOne(query);
       if (!user || user.role !== "admin") {
@@ -77,7 +80,7 @@ const run = async () => {
     };
 
     const verifyCreator = async (req, res, next) => {
-      const email = req.decodedEmail;
+      const email = req.user.email;
       const query = { email };
       const user = await usersCollection.findOne(query);
       if (!user || user.role !== "creator") {
@@ -247,6 +250,51 @@ const run = async () => {
       res.send(result);
     });
 
+    app.get("/my-joined-contests", verifyFBToken, async (req, res) => {
+      try {
+        const userEmail = req.user.email;
+
+        const pipeline = [
+          {
+            $match: { userEmail },
+          },
+          {
+            $lookup: {
+              from: "contests",
+              localField: "contestId", // ObjectId
+              foreignField: "_id", // ObjectId
+              as: "contest",
+            },
+          },
+          { $unwind: "$contest" },
+          {
+            $project: {
+              joinedAt: 1,
+              contest: {
+                _id: 1,
+                title: 1,
+                category: 1,
+                prize: 1,
+                entryFee: 1,
+                participationEndAt: 1,
+                contestThumbnail: 1,
+                status: 1,
+              },
+            },
+          },
+          { $sort: { joinedAt: -1 } },
+        ];
+        const joinedContests = await participantsCollection
+          .aggregate(pipeline)
+          .toArray();
+
+        res.send(joinedContests);
+      } catch (error) {
+        console.error("Joined contests error:", error);
+        res.status(500).send({ message: "Failed to load joined contests" });
+      }
+    });
+
     app.post("/contests", verifyFBToken, async (req, res) => {
       const contestData = req.body;
       contestData.status = "pending";
@@ -334,7 +382,11 @@ const run = async () => {
         });
 
         if (existingPayment) {
-          return res.send({ success: true, alreadyVerified: true, transactionId });
+          return res.send({
+            success: true,
+            alreadyVerified: true,
+            transactionId,
+          });
         }
 
         if (session.payment_status === "paid") {
@@ -359,7 +411,7 @@ const run = async () => {
           const participant = {
             contestId,
             userEmail,
-            paymentId: paymentResult.insertedId.toString(),
+            paymentId: paymentResult.insertedId,
             joinedAt: new Date(),
           };
 
@@ -370,12 +422,50 @@ const run = async () => {
           res.send({
             success: true,
             paymentId: paymentResult.insertedId,
-            transactionId
+            transactionId,
           });
         }
       } catch (error) {
         console.error("Verify payment error:", error);
         res.status(500).send({ message: "Payment verification failed" });
+      }
+    });
+
+    //get payments verification
+    const { ObjectId } = require("mongodb");
+
+    app.get("/payments/check/:contestId", verifyFBToken, async (req, res) => {
+      try {
+        const { contestId } = req.params;
+        const userEmail = req.user.email;
+
+        // 🔍 Check if user is a participant (joined)
+        const participant = await participantsCollection.findOne({
+          contestId,
+          userEmail,
+        });
+
+        if (!participant) {
+          return res.send({
+            paid: false,
+            joined: false,
+          });
+        }
+
+        // 🔍 Optional: fetch payment info
+        const payment = await paymentsCollection.findOne({
+          _id: participant.paymentId,
+        });
+
+        res.send({
+          paid: true,
+          joined: true,
+          paymentId: participant.paymentId,
+          paidAt: payment?.paidAt || null,
+        });
+      } catch (error) {
+        console.error("Payment check error:", error);
+        res.status(500).send({ message: "Failed to check payment status" });
       }
     });
 
