@@ -546,6 +546,30 @@ const run = async () => {
       }
     });
 
+
+    app.get("/submissions/me", verifyFBToken, async (req, res) => {
+      try {
+        const { contestId } = req.query;
+        const userEmail = req.user.email;
+
+        const submission = await submissionsCollection.findOne({
+          contestId: new ObjectId(contestId),
+          userEmail,
+        });
+
+        if (!submission) {
+          return res.send({ submitted: false });
+        }
+
+        res.send({
+          submitted: true,
+          submission,
+        });
+      } catch (error) {
+        res.status(500).send({ message: "Failed to fetch submission" });
+      }
+    });
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log(
