@@ -65,6 +65,7 @@ const run = async () => {
     const contestsCollection = database.collection("contests");
     const paymentsCollection = database.collection("payments");
     const participantsCollection = database.collection("participants");
+    const submissionsCollection = database.collection("submissions");
 
     // middleware with database access
     // verify admin before admin activity
@@ -290,10 +291,26 @@ const run = async () => {
 
         res.send(joinedContests);
       } catch (error) {
-        console.error("Joined contests error:", error);
         res.status(500).send({ message: "Failed to load joined contests" });
       }
     });
+
+    app.get(
+      "/contests/:id/participants-count",
+      verifyFBToken,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+          const count = await participantsCollection.countDocuments({
+            contestId: new ObjectId(id),
+          });
+
+          res.send({ count });
+        } catch (error) {
+          res.status(500).send({ message: "Failed to get participant count" });
+        }
+      }
+    );
 
     app.post("/contests", verifyFBToken, async (req, res) => {
       const contestData = req.body;
@@ -317,6 +334,7 @@ const run = async () => {
         res.send(result);
       }
     );
+
     app.patch(
       "/admin/contests/:id",
       verifyFBToken,
@@ -333,12 +351,28 @@ const run = async () => {
       }
     );
 
+    app.delete(
+      "/contests/:id",
+      verifyFBToken,
+      verifyCreator,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const result = await contestsCollection.deleteOne({
+            _id: new ObjectId(id),
+          });
+          res.send(result);
+        } catch (error) {
+          res.status(500).send({ message: "Failed to delete contest" });
+        }
+      }
+    );
+
     // payment related apis
     app.post("/payment-checkout-session", async (req, res) => {
       const paymentInfo = req.body;
       const contestQuery = { _id: new ObjectId(paymentInfo.contestId) };
       const contest = await contestsCollection.findOne(contestQuery);
-      console.log("contest", contest);
 
       const amount = parseInt(contest.entryFee) * 100;
 
@@ -372,7 +406,6 @@ const run = async () => {
       try {
         const sessionId = req.query.session_id;
         const session = await stripe.checkout.sessions.retrieve(sessionId);
-        console.log("session retrieve", session);
         const userEmail = session.customer_email;
         const contestId = session.metadata.contestId;
         const transactionId = session.payment_intent;
@@ -404,14 +437,14 @@ const run = async () => {
           const paymentResult = await paymentsCollection.insertOne(payment);
 
           const existingParticipant = await participantsCollection.findOne({
-            contestId,
+            contestId: new ObjectId(contestId),
             userEmail,
           });
 
           const participant = {
-            contestId,
+            contestId: new ObjectId(contestId),
             userEmail,
-            paymentId: paymentResult.insertedId,
+            paymentId: paymentResult.insertedId.toString(),
             joinedAt: new Date(),
           };
 
@@ -426,22 +459,18 @@ const run = async () => {
           });
         }
       } catch (error) {
-        console.error("Verify payment error:", error);
         res.status(500).send({ message: "Payment verification failed" });
       }
     });
 
     //get payments verification
-    const { ObjectId } = require("mongodb");
-
     app.get("/payments/check/:contestId", verifyFBToken, async (req, res) => {
       try {
         const { contestId } = req.params;
         const userEmail = req.user.email;
 
-        // 🔍 Check if user is a participant (joined)
         const participant = await participantsCollection.findOne({
-          contestId,
+          contestId: new ObjectId(contestId),
           userEmail,
         });
 
@@ -452,7 +481,6 @@ const run = async () => {
           });
         }
 
-        // 🔍 Optional: fetch payment info
         const payment = await paymentsCollection.findOne({
           _id: participant.paymentId,
         });
@@ -464,8 +492,57 @@ const run = async () => {
           paidAt: payment?.paidAt || null,
         });
       } catch (error) {
-        console.error("Payment check error:", error);
         res.status(500).send({ message: "Failed to check payment status" });
+      }
+    });
+
+    // submission related apis
+    app.post("/submissions", verifyFBToken, async (req, res) => {
+      try {
+        const { contestId, submissionValue } = req.body;
+        console.log({ contestId, submissionValue });
+        const userEmail = req.user.email;
+
+        const participant = await participantsCollection.findOne({
+          contestId: new ObjectId(contestId),
+          userEmail,
+        });
+
+        if (!participant) {
+          return res.status(403).send({
+            message: "You must join the contest before submitting",
+          });
+        }
+
+        const existingSubmission = await submissionsCollection.findOne({
+          contestId: new ObjectId(contestId),
+          userEmail,
+        });
+
+        if (existingSubmission) {
+          return res.status(409).send({
+            message: "You have already submitted",
+          });
+        }
+
+        const submission = {
+          contestId: new ObjectId(contestId),
+          userEmail,
+          participantId: participant._id,
+          submissionValue,
+          status: "pending",
+          submittedAt: new Date(),
+          updatedAt: new Date(),
+        };
+
+        const result = await submissionsCollection.insertOne(submission);
+
+        res.send({
+          success: true,
+          submissionId: result.insertedId,
+        });
+      } catch (error) {
+        res.status(500).send({ message: "Failed to submit contest entry" });
       }
     });
 
