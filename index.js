@@ -217,12 +217,95 @@ const run = async () => {
 
     // contest related apis
     app.get("/contests", async (req, res) => {
-      const query = { status: "approved" };
-      const result = await contestsCollection
-        .find(query)
-        .sort({ participationEndAt: -1 })
-        .toArray();
-      res.send(result);
+      try {
+        const { category } = req.query;
+
+        const matchStage = {
+          status: "approved",
+        };
+
+        if (category && category !== "All") {
+          matchStage.category = category;
+        }
+
+        const contests = await contestsCollection
+          .aggregate([
+            {
+              $match: matchStage,
+            },
+            {
+              $lookup: {
+                from: "participants",
+                localField: "_id",
+                foreignField: "contestId",
+                as: "participants",
+              },
+            },
+            {
+              $addFields: {
+                participantCount: {
+                  $size: "$participants",
+                },
+              },
+            },
+            {
+              $project: {
+                participants: 0,
+              },
+            },
+            {
+              $sort: { participationEndAt: -1 },
+            },
+          ])
+          .toArray();
+
+        res.send(contests);
+      } catch (error) {
+        console.error("Load contests error:", error);
+        res.status(500).send({ message: "Failed to load contests" });
+      }
+    });
+
+    app.get("/contests/popular", async (req, res) => {
+      try {
+        const popularContests = await contestsCollection
+          .aggregate([
+            {
+              $match: { status: "approved" },
+            },
+            {
+              $lookup: {
+                from: "participants",
+                localField: "_id",
+                foreignField: "contestId",
+                as: "participants",
+              },
+            },
+            {
+              $addFields: {
+                participantCount: {
+                  $size: "$participants",
+                },
+              },
+            },
+            {
+              $sort: { participantCount: -1 },
+            },
+            {
+              $limit: 8,
+            },
+            {
+              $project: {
+                participants: 0,
+              },
+            },
+          ])
+          .toArray();
+
+        res.send(popularContests);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to load popular contests" });
+      }
     });
 
     app.get("/contests/:id", verifyFBToken, async (req, res) => {
@@ -259,32 +342,69 @@ const run = async () => {
           {
             $match: { userEmail },
           },
+
+          {
+            $lookup: {
+              from: "submissions",
+              localField: "contestId",
+              foreignField: "contestId",
+              as: "submission",
+            },
+          },
+
+          {
+            $addFields: {
+              submission: {
+                $filter: {
+                  input: "$submission",
+                  as: "s",
+                  cond: { $eq: ["$$s.userEmail", userEmail] },
+                },
+              },
+            },
+          },
+
+          {
+            $unwind: {
+              path: "$submission",
+              preserveNullAndEmptyArrays: true,
+            },
+          },
+
           {
             $lookup: {
               from: "contests",
-              localField: "contestId", // ObjectId
-              foreignField: "_id", // ObjectId
+              localField: "contestId",
+              foreignField: "_id",
               as: "contest",
             },
           },
           { $unwind: "$contest" },
+
           {
             $project: {
               joinedAt: 1,
+              submissionStatus: {
+                $ifNull: ["$submission.status", "pending"],
+              },
               contest: {
-                _id: 1,
-                title: 1,
-                category: 1,
-                prize: 1,
-                entryFee: 1,
-                participationEndAt: 1,
-                contestThumbnail: 1,
-                status: 1,
+                _id: "$contest._id",
+                title: "$contest.title",
+                category: "$contest.category",
+                prize: "$contest.prize",
+                entryFee: "$contest.entryFee",
+                participationEndAt: "$contest.participationEndAt",
+                contestThumbnail: "$contest.contestThumbnail",
+                contestStatus: "$contest.contestStatus",
               },
             },
           },
-          { $sort: { joinedAt: -1 } },
+
+          {
+            $sort: { joinedAt: -1 },
+          },
         ];
+
         const joinedContests = await participantsCollection
           .aggregate(pipeline)
           .toArray();
@@ -563,7 +683,6 @@ const run = async () => {
     app.post("/submissions", verifyFBToken, async (req, res) => {
       try {
         const { contestId, submissionValue } = req.body;
-        console.log({ contestId, submissionValue });
         const userEmail = req.user.email;
 
         const contest = await contestsCollection.findOne({
@@ -619,99 +738,95 @@ const run = async () => {
       }
     });
 
- app.patch(
-  "/creator/contests/:contestId/winner/:submissionId",
-  verifyFBToken,
-  verifyCreator,
-  async (req, res) => {
-    try {
-      const { contestId, submissionId } = req.params;
+    app.patch(
+      "/creator/contests/:contestId/winner/:submissionId",
+      verifyFBToken,
+      verifyCreator,
+      async (req, res) => {
+        try {
+          const { contestId, submissionId } = req.params;
 
-      // 1️⃣ Validate IDs
-      if (
-        !ObjectId.isValid(contestId) ||
-        !ObjectId.isValid(submissionId)
-      ) {
-        return res.status(400).send({ message: "Invalid ID" });
-      }
+          if (!ObjectId.isValid(contestId) || !ObjectId.isValid(submissionId)) {
+            return res.status(400).send({ message: "Invalid ID" });
+          }
 
-      // 2️⃣ Check contest exists
-      const contest = await contestsCollection.findOne({
-        _id: new ObjectId(contestId),
-      });
+          const contest = await contestsCollection.findOne({
+            _id: new ObjectId(contestId),
+          });
 
-      if (!contest) {
-        return res.status(404).send({ message: "Contest not found" });
-      }
+          if (!contest) {
+            return res.status(404).send({ message: "Contest not found" });
+          }
 
-      // 3️⃣ Prevent selecting winner twice
-      if (contest.contestStatus === "completed") {
-        return res.status(409).send({
-          message: "Winner already selected for this contest",
-        });
-      }
+          const now = new Date();
+          const endTime = new Date(contest.participationEndAt);
 
-      // 4️⃣ Set WINNER (ONLY if still pending)
-      const updateWinner = await submissionsCollection.updateOne(
-        {
-          _id: new ObjectId(submissionId),
-          contestId: new ObjectId(contestId),
-          status: "pending", // 🔒 IMPORTANT
-        },
-        {
-          $set: {
-            status: "winner",
-            updatedAt: new Date(),
-          },
+          if (now < endTime) {
+            return res.status(400).send({
+              message: "You cannot announce the winner before the contest ends",
+            });
+          }
+
+          if (contest.contestStatus === "completed") {
+            return res.status(409).send({
+              message: "Winner already selected for this contest",
+            });
+          }
+
+          const updateWinner = await submissionsCollection.updateOne(
+            {
+              _id: new ObjectId(submissionId),
+              contestId: new ObjectId(contestId),
+              status: "pending",
+            },
+            {
+              $set: {
+                status: "winner",
+                updatedAt: new Date(),
+              },
+            }
+          );
+
+          if (updateWinner.matchedCount === 0) {
+            return res.status(400).send({
+              message: "Submission not found or already processed",
+            });
+          }
+
+          await submissionsCollection.updateMany(
+            {
+              contestId: new ObjectId(contestId),
+              _id: { $ne: new ObjectId(submissionId) },
+              status: "pending",
+            },
+            {
+              $set: {
+                status: "lost",
+                updatedAt: new Date(),
+              },
+            }
+          );
+
+          await contestsCollection.updateOne(
+            { _id: new ObjectId(contestId) },
+            {
+              $set: {
+                contestStatus: "completed",
+              },
+            }
+          );
+
+          res.send({
+            success: true,
+            message: "Winner selected successfully",
+          });
+        } catch (error) {
+          res.status(500).send({
+            message: "Failed to select winner",
+          });
         }
-      );
-
-      // 🔥 Correct validation (NO findOneAndUpdate)
-      if (updateWinner.matchedCount === 0) {
-        return res.status(400).send({
-          message:
-            "Submission not found or already processed",
-        });
       }
-
-      // 5️⃣ Set ALL OTHER submissions to LOST
-      await submissionsCollection.updateMany(
-        {
-          contestId: new ObjectId(contestId),
-          _id: { $ne: new ObjectId(submissionId) },
-          status: "pending",
-        },
-        {
-          $set: {
-            status: "lost",
-            updatedAt: new Date(),
-          },
-        }
-      );
-
-      // 6️⃣ Update contest status
-      await contestsCollection.updateOne(
-        { _id: new ObjectId(contestId) },
-        {
-          $set: {
-            contestStatus: "completed",
-          },
-        }
-      );
-
-      // 7️⃣ Success response
-      res.send({
-        success: true,
-        message: "Winner selected successfully",
-      });
-    } catch (error) {
-      console.error("Make winner error:", error);
-      res.status(500).send({
-        message: "Failed to select winner",
-      });
-    }
-  }
-);
+    );
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
