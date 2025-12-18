@@ -344,7 +344,7 @@ const run = async () => {
         const updatedStatus = req.body;
         const query = { _id: new ObjectId(id) };
         const updatedDoc = {
-          $set: updatedStatus,
+          $set: { status: updatedStatus.status, contestStatus: "open" },
         };
         const result = await contestsCollection.updateOne(query, updatedDoc);
         res.send(result);
@@ -497,11 +497,84 @@ const run = async () => {
     });
 
     // submission related apis
+    app.get(
+      "/creator/contests/:contestId/submissions",
+      verifyFBToken,
+      verifyCreator,
+      async (req, res) => {
+        const { contestId } = req.params;
+
+        const submissions = await submissionsCollection
+          .aggregate([
+            {
+              $match: {
+                contestId: new ObjectId(contestId),
+              },
+            },
+            {
+              $lookup: {
+                from: "users",
+                localField: "userEmail",
+                foreignField: "email",
+                as: "user",
+              },
+            },
+            { $unwind: "$user" },
+            {
+              $project: {
+                submissionValue: 1,
+                status: 1,
+                submittedAt: 1,
+                "user.name": 1,
+                "user.email": 1,
+                "user.photoURL": 1,
+              },
+            },
+          ])
+          .toArray();
+
+        res.send(submissions);
+      }
+    );
+
+    app.get("/submissions/me", verifyFBToken, async (req, res) => {
+      try {
+        const { contestId } = req.query;
+        const userEmail = req.user.email;
+
+        const submission = await submissionsCollection.findOne({
+          contestId: new ObjectId(contestId),
+          userEmail,
+        });
+
+        if (!submission) {
+          return res.send({ submitted: false });
+        }
+
+        res.send({
+          submitted: true,
+          submission,
+        });
+      } catch (error) {
+        res.status(500).send({ message: "Failed to fetch submission" });
+      }
+    });
+
     app.post("/submissions", verifyFBToken, async (req, res) => {
       try {
         const { contestId, submissionValue } = req.body;
         console.log({ contestId, submissionValue });
         const userEmail = req.user.email;
+
+        const contest = await contestsCollection.findOne({
+          _id: new ObjectId(contestId),
+        });
+
+        if (contest.contestStatus !== "open") {
+          return res.status(403).send({
+            message: "Contest is closed for submissions",
+          });
+        }
 
         const participant = await participantsCollection.findOne({
           contestId: new ObjectId(contestId),
@@ -546,29 +619,99 @@ const run = async () => {
       }
     });
 
+ app.patch(
+  "/creator/contests/:contestId/winner/:submissionId",
+  verifyFBToken,
+  verifyCreator,
+  async (req, res) => {
+    try {
+      const { contestId, submissionId } = req.params;
 
-    app.get("/submissions/me", verifyFBToken, async (req, res) => {
-      try {
-        const { contestId } = req.query;
-        const userEmail = req.user.email;
-
-        const submission = await submissionsCollection.findOne({
-          contestId: new ObjectId(contestId),
-          userEmail,
-        });
-
-        if (!submission) {
-          return res.send({ submitted: false });
-        }
-
-        res.send({
-          submitted: true,
-          submission,
-        });
-      } catch (error) {
-        res.status(500).send({ message: "Failed to fetch submission" });
+      // 1️⃣ Validate IDs
+      if (
+        !ObjectId.isValid(contestId) ||
+        !ObjectId.isValid(submissionId)
+      ) {
+        return res.status(400).send({ message: "Invalid ID" });
       }
-    });
+
+      // 2️⃣ Check contest exists
+      const contest = await contestsCollection.findOne({
+        _id: new ObjectId(contestId),
+      });
+
+      if (!contest) {
+        return res.status(404).send({ message: "Contest not found" });
+      }
+
+      // 3️⃣ Prevent selecting winner twice
+      if (contest.contestStatus === "completed") {
+        return res.status(409).send({
+          message: "Winner already selected for this contest",
+        });
+      }
+
+      // 4️⃣ Set WINNER (ONLY if still pending)
+      const updateWinner = await submissionsCollection.updateOne(
+        {
+          _id: new ObjectId(submissionId),
+          contestId: new ObjectId(contestId),
+          status: "pending", // 🔒 IMPORTANT
+        },
+        {
+          $set: {
+            status: "winner",
+            updatedAt: new Date(),
+          },
+        }
+      );
+
+      // 🔥 Correct validation (NO findOneAndUpdate)
+      if (updateWinner.matchedCount === 0) {
+        return res.status(400).send({
+          message:
+            "Submission not found or already processed",
+        });
+      }
+
+      // 5️⃣ Set ALL OTHER submissions to LOST
+      await submissionsCollection.updateMany(
+        {
+          contestId: new ObjectId(contestId),
+          _id: { $ne: new ObjectId(submissionId) },
+          status: "pending",
+        },
+        {
+          $set: {
+            status: "lost",
+            updatedAt: new Date(),
+          },
+        }
+      );
+
+      // 6️⃣ Update contest status
+      await contestsCollection.updateOne(
+        { _id: new ObjectId(contestId) },
+        {
+          $set: {
+            contestStatus: "completed",
+          },
+        }
+      );
+
+      // 7️⃣ Success response
+      res.send({
+        success: true,
+        message: "Winner selected successfully",
+      });
+    } catch (error) {
+      console.error("Make winner error:", error);
+      res.status(500).send({
+        message: "Failed to select winner",
+      });
+    }
+  }
+);
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
