@@ -92,16 +92,34 @@ const run = async () => {
 
     // users related apis
     app.get("/users", verifyFBToken, verifyAdmin, async (req, res) => {
-      const searchText = req.query.searchText;
-      const query = {};
-      if (searchText) {
-        query.$or = [
-          { name: { $regex: searchText, $options: "i" } },
-          { email: { $regex: searchText, $options: "i" } },
-        ];
+      try {
+        const { searchText = "", page = 1, limit = 10 } = req.query;
+
+        const query = {};
+        if (searchText) {
+          query.$or = [
+            { name: { $regex: searchText, $options: "i" } },
+            { email: { $regex: searchText, $options: "i" } },
+          ];
+        }
+
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+
+        const users = await usersCollection
+          .find(query)
+          .skip(skip)
+          .limit(parseInt(limit))
+          .toArray();
+
+        const totalCount = await usersCollection.countDocuments(query);
+
+        res.send({
+          users,
+          totalCount,
+        });
+      } catch (error) {
+        res.status(500).send({ message: "Failed to load users" });
       }
-      const result = await usersCollection.find(query).toArray();
-      res.send(result);
     });
 
     app.get("/user/profile", verifyFBToken, async (req, res) => {
@@ -213,6 +231,104 @@ const run = async () => {
         });
       } catch (error) {
         res.status(500).send({ message: "Failed to load dashboard stats" });
+      }
+    });
+
+    app.get("/user/winning-contests", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.user.email;
+
+        const pipeline = [
+          {
+            $match: {
+              userEmail: email,
+              status: "winner",
+            },
+          },
+          {
+            $lookup: {
+              from: "contests",
+              localField: "contestId",
+              foreignField: "_id",
+              as: "contest",
+            },
+          },
+          { $unwind: "$contest" },
+          {
+            $project: {
+              _id: 0,
+              contestId: "$contest._id",
+              title: "$contest.title",
+              category: "$contest.category",
+              prize: "$contest.prize",
+              thumbnail: "$contest.contestThumbnail",
+              wonAt: "$updatedAt",
+            },
+          },
+          { $sort: { wonAt: -1 } },
+        ];
+
+        const result = await submissionsCollection
+          .aggregate(pipeline)
+          .toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to load winning contests" });
+      }
+    });
+
+    app.get("/leaderboard", async (req, res) => {
+      try {
+        const pipeline = [
+          // only winners
+          {
+            $match: { status: "winner" },
+          },
+
+          // count wins per user
+          {
+            $group: {
+              _id: "$userEmail",
+              totalWins: { $sum: 1 },
+            },
+          },
+
+          // join users collection
+          {
+            $lookup: {
+              from: "users",
+              localField: "_id",
+              foreignField: "email",
+              as: "user",
+            },
+          },
+          { $unwind: "$user" },
+
+          // shape response
+          {
+            $project: {
+              _id: 0,
+              email: "$_id",
+              name: "$user.name",
+              photoURL: "$user.photoURL",
+              totalWins: 1,
+            },
+          },
+
+          // sort by wins
+          { $sort: { totalWins: -1 } },
+
+          // limit top users
+          { $limit: 10 },
+        ];
+
+        const leaderboard = await submissionsCollection
+          .aggregate(pipeline)
+          .toArray();
+
+        res.send(leaderboard);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to load leaderboard" });
       }
     });
 
