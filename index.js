@@ -473,7 +473,7 @@ const run = async () => {
     // contest related apis
     app.get("/contests", async (req, res) => {
       try {
-        const { category } = req.query;
+        const { category, search } = req.query;
 
         const matchStage = {
           status: "approved",
@@ -484,11 +484,17 @@ const run = async () => {
           matchStage.category = category;
         }
 
+        if (search) {
+          matchStage.$or = [
+            { title: { $regex: search, $options: "i" } },
+            { category: { $regex: search, $options: "i" } },
+            { description: { $regex: search, $options: "i" } },
+          ];
+        }
+
         const contests = await contestsCollection
           .aggregate([
-            {
-              $match: matchStage,
-            },
+            { $match: matchStage },
             {
               $lookup: {
                 from: "participants",
@@ -499,25 +505,16 @@ const run = async () => {
             },
             {
               $addFields: {
-                participantCount: {
-                  $size: "$participants",
-                },
+                participantCount: { $size: "$participants" },
               },
             },
-            {
-              $project: {
-                participants: 0,
-              },
-            },
-            {
-              $sort: { participationEndAt: -1 },
-            },
+            { $project: { participants: 0 } },
+            { $sort: { participationEndAt: -1 } },
           ])
           .toArray();
 
         res.send(contests);
       } catch (error) {
-        console.error("Load contests error:", error);
         res.status(500).send({ message: "Failed to load contests" });
       }
     });
@@ -561,6 +558,57 @@ const run = async () => {
         res.send(popularContests);
       } catch (error) {
         res.status(500).send({ message: "Failed to load popular contests" });
+      }
+    });
+
+    app.get("/winners/recent", async (req, res) => {
+      try {
+        const pipeline = [
+          {
+            $match: { status: "winner" },
+          },
+          {
+            $sort: { updatedAt: -1 },
+          },
+          {
+            $limit: 3,
+          },
+          {
+            $lookup: {
+              from: "contests",
+              localField: "contestId",
+              foreignField: "_id",
+              as: "contest",
+            },
+          },
+          { $unwind: "$contest" },
+          {
+            $lookup: {
+              from: "users",
+              localField: "userEmail",
+              foreignField: "email",
+              as: "user",
+            },
+          },
+          { $unwind: "$user" },
+          {
+            $project: {
+              _id: 0,
+              name: "$user.name",
+              photoURL: "$user.photoURL",
+              category: "$contest.category",
+              prize: "$contest.prize",
+            },
+          },
+        ];
+
+        const winners = await submissionsCollection
+          .aggregate(pipeline)
+          .toArray();
+
+        res.send(winners);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to load winners" });
       }
     });
 
