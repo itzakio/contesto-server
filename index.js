@@ -775,22 +775,49 @@ const run = async () => {
       }
     );
 
-    app.delete(
-      "/contests/:id",
-      verifyFBToken,
-      verifyCreator,
-      async (req, res) => {
-        try {
-          const id = req.params.id;
-          const result = await contestsCollection.deleteOne({
-            _id: new ObjectId(id),
-          });
-          res.send(result);
-        } catch (error) {
-          res.status(500).send({ message: "Failed to delete contest" });
-        }
+   app.delete(
+  "/contests/:id",
+  verifyFBToken,
+  async (req, res) => {
+    try {
+      const contestId = req.params.id;
+      const userEmail = req.user.email;
+      const user = await usersCollection.findOne({ email: userEmail });
+
+      if (!user) {
+        return res.status(401).send({ message: "Unauthorized" });
       }
-    );
+      
+      const contest = await contestsCollection.findOne({
+        _id: new ObjectId(contestId),
+      });
+
+      if (!contest) {
+        return res.status(404).send({ message: "Contest not found" });
+      }
+      const isAdmin = user.role === "admin";
+      const isCreatorOwner =
+        user.role === "creator" &&
+        contest.creatorEmail === userEmail;
+
+      if (!isAdmin && !isCreatorOwner) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
+
+      const result = await contestsCollection.deleteOne({
+        _id: new ObjectId(contestId),
+      });
+
+      res.send({
+        message: "Contest deleted successfully",
+        deletedCount: result.deletedCount,
+      });
+    } catch (error) {
+      res.status(500).send({ message: "Failed to delete contest" });
+    }
+  }
+);
+
 
     // payment related apis
     app.post("/payment-checkout-session", verifyFBToken, async (req, res) => {
