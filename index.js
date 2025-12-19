@@ -104,11 +104,116 @@ const run = async () => {
       res.send(result);
     });
 
+    app.get("/user/profile", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.query.email;
+        if (!email || email !== req.user.email) {
+          return res.status(403).send({ message: "Forbidden access" });
+        }
+
+        const user = await usersCollection.findOne({ email });
+
+        if (!user) {
+          return res.status(404).send({ message: "User not found" });
+        }
+
+        res.send(user);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to load user profile" });
+      }
+    });
+
     app.get("/users/:email/role", async (req, res) => {
       const email = req.params.email;
       const query = { email };
       const user = await usersCollection.findOne(query);
       res.send({ role: user?.role || "user" });
+    });
+
+    app.get("/user-win-category-stats", verifyFBToken, async (req, res) => {
+      try {
+        const { email } = req.query;
+
+        if (!email) {
+          return res.status(400).send({ message: "Email is required" });
+        }
+
+        //Category-wise WIN stats
+        const categoryPipeline = [
+          {
+            $match: {
+              userEmail: email,
+              status: "winner",
+            },
+          },
+          {
+            $lookup: {
+              from: "contests",
+              localField: "contestId",
+              foreignField: "_id",
+              as: "contest",
+            },
+          },
+          { $unwind: "$contest" },
+          {
+            $group: {
+              _id: "$contest.category",
+              winCount: { $sum: 1 },
+            },
+          },
+          {
+            $project: {
+              _id: 0,
+              category: "$_id",
+              winCount: 1,
+            },
+          },
+        ];
+
+        //Win / Lost totals
+        const resultPipeline = [
+          {
+            $match: {
+              userEmail: email,
+              status: { $in: ["winner", "lost"] },
+            },
+          },
+          {
+            $group: {
+              _id: "$status",
+              count: { $sum: 1 },
+            },
+          },
+        ];
+
+        const [categoryStats, resultStats] = await Promise.all([
+          submissionsCollection.aggregate(categoryPipeline).toArray(),
+          submissionsCollection.aggregate(resultPipeline).toArray(),
+        ]);
+
+        let win = 0;
+        let lost = 0;
+
+        resultStats.forEach((item) => {
+          if (item._id === "winner") win = item.count;
+          if (item._id === "lost") lost = item.count;
+        });
+
+        const total = win + lost;
+
+        res.send({
+          summary: {
+            win,
+            lost,
+            winRate: total ? +((win / total) * 100).toFixed(1) : 0,
+            lostRate: total ? +((lost / total) * 100).toFixed(1) : 0,
+            total,
+          },
+          categoryStats,
+        });
+      } catch (error) {
+        res.status(500).send({ message: "Failed to load dashboard stats" });
+      }
     });
 
     app.post("/users", async (req, res) => {
@@ -141,6 +246,40 @@ const run = async () => {
         res.send(result);
       }
     );
+
+    app.patch("/user/profile", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.user.email;
+        const { name, photoURL, address, bio } = req.body;
+
+        if (!name && !photoURL && !address && !bio) {
+          return res
+            .status(400)
+            .send({ message: "No fields provided to update" });
+        }
+        const updateDoc = {};
+        if (name) updateDoc.name = name;
+        if (photoURL) updateDoc.photoURL = photoURL;
+        if (address) updateDoc.address = address;
+        if (bio) updateDoc.bio = bio;
+
+        const result = await usersCollection.updateOne(
+          { email },
+          { $set: updateDoc }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "User not found" });
+        }
+
+        res.send({
+          message: "Profile updated successfully",
+          modifiedCount: result.modifiedCount,
+        });
+      } catch (error) {
+        res.status(500).send({ message: "Failed to update profile" });
+      }
+    });
 
     // creator related apis
     app.get("/creators", async (req, res) => {
@@ -222,6 +361,7 @@ const run = async () => {
 
         const matchStage = {
           status: "approved",
+          contestStatus: "open",
         };
 
         if (category && category !== "All") {
@@ -271,7 +411,7 @@ const run = async () => {
         const popularContests = await contestsCollection
           .aggregate([
             {
-              $match: { status: "approved" },
+              $match: { status: "approved", contestStatus: "open" },
             },
             {
               $lookup: {
@@ -489,10 +629,21 @@ const run = async () => {
     );
 
     // payment related apis
-    app.post("/payment-checkout-session", async (req, res) => {
+    app.post("/payment-checkout-session", verifyFBToken, async (req, res) => {
       const paymentInfo = req.body;
+      const email = req.user.email;
       const contestQuery = { _id: new ObjectId(paymentInfo.contestId) };
       const contest = await contestsCollection.findOne(contestQuery);
+
+      const user = await usersCollection.findOne({ email });
+      console.log(user);
+
+      if (user.role === "admin") {
+        return res.status(403).send({ error: "Admin cannot join contest" });
+      }
+      if (user.role === "creator") {
+        return res.status(403).send({ error: "Creators cannot join contest" });
+      }
 
       const amount = parseInt(contest.entryFee) * 100;
 
