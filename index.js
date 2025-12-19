@@ -252,7 +252,7 @@ const run = async () => {
         const email = req.user.email;
         const { name, photoURL, address, bio } = req.body;
 
-        if (!name && !photoURL && !address && !bio) {
+        if (!name && !photoURL) {
           return res
             .status(400)
             .send({ message: "No fields provided to update" });
