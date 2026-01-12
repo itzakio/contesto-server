@@ -8,7 +8,12 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 const admin = require("firebase-admin");
 
-const serviceAccount = require("./contesto-firebase-adminsdk.json");
+// const serviceAccount = require("./contesto-firebase-adminsdk.json");
+
+// const serviceAccount = require("./firebase-admin-key.json");
+
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
+const serviceAccount = JSON.parse(decoded);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -471,53 +476,69 @@ const run = async () => {
     );
 
     // contest related apis
-    app.get("/contests", async (req, res) => {
-      try {
-        const { category, search } = req.query;
+   app.get("/contests", async (req, res) => {
+  try {
+    const { category, search, page = 1, limit = 8 } = req.query;
 
-        const matchStage = {
-          status: "approved",
-          contestStatus: "open",
-        };
+    const pageNumber = parseInt(page);
+    const pageLimit = parseInt(limit);
+    const skip = (pageNumber - 1) * pageLimit;
 
-        if (category && category !== "All") {
-          matchStage.category = category;
-        }
+    const matchStage = {
+      status: "approved",
+      contestStatus: "open",
+    };
 
-        if (search) {
-          matchStage.$or = [
-            { title: { $regex: search, $options: "i" } },
-            { category: { $regex: search, $options: "i" } },
-            { description: { $regex: search, $options: "i" } },
-          ];
-        }
+    if (category && category !== "All") {
+      matchStage.category = category;
+    }
 
-        const contests = await contestsCollection
-          .aggregate([
-            { $match: matchStage },
-            {
-              $lookup: {
-                from: "participants",
-                localField: "_id",
-                foreignField: "contestId",
-                as: "participants",
-              },
-            },
-            {
-              $addFields: {
-                participantCount: { $size: "$participants" },
-              },
-            },
-            { $project: { participants: 0 } },
-            { $sort: { participationEndAt: -1 } },
-          ])
-          .toArray();
+    if (search) {
+      matchStage.$or = [
+        { title: { $regex: search, $options: "i" } },
+        { category: { $regex: search, $options: "i" } },
+        { description: { $regex: search, $options: "i" } },
+      ];
+    }
 
-        res.send(contests);
-      } catch (error) {
-        res.status(500).send({ message: "Failed to load contests" });
-      }
+    // 🔹 Total count (for pagination)
+    const totalCount = await contestsCollection.countDocuments(matchStage);
+
+    // 🔹 Paginated data
+    const contests = await contestsCollection
+      .aggregate([
+        { $match: matchStage },
+        {
+          $lookup: {
+            from: "participants",
+            localField: "_id",
+            foreignField: "contestId",
+            as: "participants",
+          },
+        },
+        {
+          $addFields: {
+            participantCount: { $size: "$participants" },
+          },
+        },
+        { $project: { participants: 0 } },
+        { $sort: { participationEndAt: -1 } },
+        { $skip: skip },
+        { $limit: pageLimit },
+      ])
+      .toArray();
+
+    res.send({
+      contests,
+      totalCount,
+      totalPages: Math.ceil(totalCount / pageLimit),
+      currentPage: pageNumber,
     });
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load contests" });
+  }
+});
+
 
     app.get("/contests/popular", async (req, res) => {
       try {
@@ -612,7 +633,7 @@ const run = async () => {
       }
     });
 
-    app.get("/contests/:id", verifyFBToken, async (req, res) => {
+    app.get("/contests/:id", async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await contestsCollection.findOne(query);
@@ -827,7 +848,6 @@ const run = async () => {
       const contest = await contestsCollection.findOne(contestQuery);
 
       const user = await usersCollection.findOne({ email });
-      console.log(user);
 
       if (user.role === "admin") {
         return res.status(403).send({ error: "Admin cannot join contest" });
